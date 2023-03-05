@@ -68,32 +68,6 @@ char16_t *g_key_words[] = {
 	u"yield",
 };
 
-int scanner_new(const char16_t *src,
-				size_t src_len,
-				struct scanner **out)
-{
-	int err;
-	struct scanner *scanner;
-
-	err = ERR_NO_MEMORY;
-	scanner = calloc(1, sizeof(*scanner));
-	if (scanner == NULL)
-		goto err0;
-
-	err = ERR_SUCCESS;
-	scanner->src = src;
-	scanner->src_len = src_len;
-	*out = scanner;
-err0:
-	return err;
-}
-
-int scanner_delete(struct scanner *this)
-{
-	free((void *)this->src);
-	free(this);
-	return ERR_SUCCESS;
-}
 /*******************************************************************/
 static
 int token_new(enum token_type type,
@@ -119,6 +93,33 @@ int token_new(enum token_type type,
 int token_delete(struct token *this)
 {
 	free((void *)this->cooked);
+	free(this);
+	return ERR_SUCCESS;
+}
+/*******************************************************************/
+int scanner_new(const char16_t *src,
+				size_t src_len,
+				struct scanner **out)
+{
+	int err;
+	struct scanner *scanner;
+
+	err = ERR_NO_MEMORY;
+	scanner = calloc(1, sizeof(*scanner));
+	if (scanner == NULL)
+		goto err0;
+
+	err = ERR_SUCCESS;
+	scanner->src = src;
+	scanner->src_len = src_len;
+	*out = scanner;
+err0:
+	return err;
+}
+
+int scanner_delete(struct scanner *this)
+{
+	free((void *)this->src);
 	free(this);
 	return ERR_SUCCESS;
 }

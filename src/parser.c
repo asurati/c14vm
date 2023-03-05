@@ -71,6 +71,7 @@ int parse_node_new(enum token_type type,
 	int err;
 	struct parse_node *node;
 
+	*out = NULL;
 	err = ERR_NO_MEMORY;
 	node = calloc(1, sizeof(*node));
 	if (node == NULL)
@@ -88,6 +89,9 @@ int parse_node_delete(struct parse_node *this)
 {
 	struct list_entry *e;
 	struct parse_node *node;
+
+	if (this == NULL)
+		return ERR_SUCCESS;
 
 	list_for_each_del(e, &this->nodes) {
 		node = list_entry(e, struct parse_node, entry);
@@ -182,16 +186,16 @@ int parser_parse(struct parser *this,
 				 struct parse_node **out)
 {
 	int err;
-	size_t i, pos;
+	size_t i, pos, cooked_len;
 	struct parse_node *node, *child;
 	const struct rhs_settings *rhs;
 	const struct token *token;
+	const char16_t *cooked;
 	const size_t in_pos = *q_pos;
 	const int in_flags = flags;
 
 	*out = child = NULL;
 
-	/* Only create a node if the caller requested for it */
 	err = parse_node_new(type, &node);
 	if (err)
 		return err;
@@ -210,28 +214,56 @@ int parser_parse(struct parser *this,
 		else
 			err = ERR_NO_MATCH;
 		break;
+	case TOKEN_VAR:
+		/* These are all reserved literals. */
+		err = parser_get_token(this, q_pos, &token);
+		if (err)
+			break;
+
+		err = ERR_NO_MATCH;
+		if (token_type(token) != type ||
+			!token_is_reserved_literal(token))
+			break;
+		err = ERR_SUCCESS;
+		break;
 	case TOKEN_LEFT_BRACE:
 	case TOKEN_RIGHT_BRACE:
 	case TOKEN_SEMI_COLON:
 	case TOKEN_COMMA:
 	case TOKEN_EQUALS:
-	case TOKEN_VAR:
 		/*
+		 * Punctuations, etc. Always literals.
 		 * If the token doesn't match, the q_pos is reset at the end, becoz
 		 * we throw ERR_NO_MATCH.
-		 *
-		 * All of these are literals.
 		 */
 		err = parser_get_token(this, q_pos, &token);
-		if (!err && token_type(token) == type &&
-			!token_has_unc_esc(token) &&
-			!token_has_hex_esc(token))
+		if (err)
 			break;
-		else if (!err)
+
+		if (token_type(token) != type)
 			err = ERR_NO_MATCH;
 		break;
 		/*******************************************************************/
 		/* Syntactical Grammar Non-Terminals */
+	case TOKEN_IDENTIFIER_NAME:
+		err = parser_get_token(this, q_pos, &token);
+		if (err)
+			break;
+
+		err = ERR_NO_MATCH;
+		if (!token_is_identifier_name(token))
+			break;
+
+		if (token_is_reserved_word(token)) {
+			parse_node_delete(node);
+			err = parse_node_new(token_type(token), &node);
+		} else {
+			cooked = token_cooked(token, &cooked_len);
+			assert(cooked);
+			parse_node_set_cooked(node, cooked, cooked_len);
+			err = ERR_SUCCESS;
+		}
+		break;
 	case TOKEN_SCRIPT:
 		type = TOKEN_SCRIPT_BODY;
 		err = parser_parse(this, type, flags, q_pos, &child);
@@ -362,6 +394,21 @@ int parser_parse(struct parser *this,
 		parse_node_delete(child);
 		type = TOKEN_ASSIGN_EXPR;
 		err = parser_parse(this, type, flags, q_pos, &child);
+		break;
+		/*******************************************************************/
+	case TOKEN_BINDING_IDENTIFIER:
+		type = TOKEN_IDENTIFIER_NAME;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		if (parse_node_is_reserved_word(child)) {
+			/* This is a reserved word. Fail */
+			parse_node_delete(child);
+			child = NULL;
+			err = ERR_NO_MATCH;	/* TODO: Convert to SyntaxError */
+		}
+		/* TODO: Check for await and yield errors */
 		break;
 		/*******************************************************************/
 	case TOKEN_VAR_DECL: {

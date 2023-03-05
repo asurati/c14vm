@@ -61,6 +61,13 @@ void parse_node_add_child(struct parse_node *this,
 	list_add_tail(&this->nodes, &child->entry);
 }
 
+/* For use with parsing Identfiers only */
+static inline
+bool parse_node_is_reserved_word(const struct parse_node *this)
+{
+	return token_type_is_reserved_word(this->type);
+}
+
 static inline
 enum token_type parse_node_type(const struct parse_node *this)
 {

@@ -21,11 +21,11 @@
 
 enum token_type {
 	TOKEN_INVALID,	/* Must be 0 */
-	TOKEN_ANY,		/* Used whem matching rsvd words/literals. */
 	TOKEN_NEW_LINE,	/* Internal use */
 
 	TOKEN_STRING,
 
+	/* Literal Punctuations */
 	TOKEN_LEFT_PAREN,
 	TOKEN_LEFT_BRACE,
 	TOKEN_LEFT_BRACKET,
@@ -67,7 +67,11 @@ enum token_type {
 	TOKEN_MUL,
 	TOKEN_MOD,
 
-	// Same order as g_key_words
+	/*
+	 * Same order as g_key_words.
+	 * These are identifiers. Their raw forms may contain unc escs, but never a
+	 * hex esc.
+	 */
 	TOKEN_IDENTIFIER,
 	TOKEN_AS,
 	TOKEN_ASYNC,
@@ -160,6 +164,7 @@ enum token_type {
 
 	TOKEN_ARROW_FUNC,	/* 30 */
 	TOKEN_ASYNC_ARROW_FUNC,
+	TOKEN_IDENTIFIER_NAME,
 };
 
 struct token_location {
@@ -180,8 +185,18 @@ struct token {
 };
 
 int		token_delete(struct token *this);
-bool	token_is_rsvd_word(const struct token *this,
-						   enum token_type type);
+
+static inline
+bool token_type_is_reserved_word(enum token_type type)
+{
+	return  type >= TOKEN_AS && type <= TOKEN_YIELD;
+}
+
+static inline
+bool token_is_reserved_word(const struct token *this)
+{
+	return token_type_is_reserved_word(this->type);
+}
 
 static inline
 void token_set_cooked(struct token *this,
@@ -224,14 +239,42 @@ bool token_has_new_line_pfx(const struct token *this)
 	return bits_get(this->flags, TF_NL_PFX) != 0;
 }
 
-// rsvd_literal == rsvd_word with no unc escs.
+/* IdentifierName:
+ *	can contain unc esc.
+ *	can be a rsvd word.
+ *	can't contain hex escs.
+ */
 static inline
-bool token_is_rsvd_literal(const struct token *this,
-						   enum token_type type)
+bool token_is_identifier_name(const struct token *this)
 {
-	if (!token_is_rsvd_word(this, type))
+	enum token_type type = token_type(this);
+
+	/*
+	 * If it is not lexical TOKEN_IDENTIFIER, and
+	 * if it is not a rsvd word,
+	 * then it cannot be an identifier name
+	 */
+	if (type != TOKEN_IDENTIFIER && !token_is_reserved_word(this))
 		return false;
-	return !token_has_unc_esc(this);
+
+	/*
+	 * If this has hex esc seqs, it cannot be an identifier name.
+	 * This is very likely redundant, since the scanner, when preparing an
+	 * identifier token, will raise an error if it finds a hex esc.seq.
+	 */
+	assert(!token_has_hex_esc(this));
+	return true;
+}
+
+// rsvd_literal == rsvd_word with no escs.
+static inline
+bool token_is_reserved_literal(const struct token *this)
+{
+	if (!token_is_reserved_word(this) ||
+		token_has_unc_esc(this))
+		return false;
+	assert(!token_has_hex_esc(this));
+	return true;
 }
 
 struct scanner {
