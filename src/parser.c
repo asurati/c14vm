@@ -9,22 +9,60 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/*
+ * on/off wrt the grammar parameters received by the production whose rhs
+ * settings are represented by this structure.
+ *
+ * flags |= on (bits_on() | bits_on() | ...)
+ * flags &= off (bits_off() & bits_off() & ...)
+ */
+#define RHS_ON_NONE		0
+#define RHS_ON_ALL		((size_t)-1)
+#define RHS_OFF_NONE	((size_t)-1)
+#define RHS_OFF_ALL		0
+
+struct rhs_settings {
+	enum token_type	type;
+	size_t		on;
+	size_t		off;
+};
+
 static const
-enum token_type g_stmt_rhs[] = {
-	TOKEN_BLOCK_STMT,
-	TOKEN_VAR_STMT,
-	TOKEN_EMPTY_STMT,
-	TOKEN_EXPR_STMT,
-	TOKEN_IF_STMT,
-	TOKEN_BREAKABLE_STMT,
-	TOKEN_CONTINUE_STMT,
-	TOKEN_BREAK_STMT,
-	TOKEN_RETURN_STMT,
-	TOKEN_WITH_STMT,
-	TOKEN_LABELLED_STMT,
-	TOKEN_THROW_STMT,
-	TOKEN_TRY_STMT,
-	TOKEN_DEBUGGER_STMT,
+struct rhs_settings g_assign_expr_rhs[] = {
+	/* Must keep LHS_EXPR first, since that is checked first. */
+	{TOKEN_LHS_EXPR,			RHS_ON_NONE, bits_off(GP_IN)},
+
+	{TOKEN_COND_EXPR,			RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_YIELD_EXPR,			RHS_ON_NONE, bits_off(GP_YIELD)},
+	{TOKEN_ARROW_FUNC,			RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_ASYNC_ARROW_FUNC,	RHS_ON_NONE, RHS_OFF_NONE},
+};
+
+static const
+struct rhs_settings g_script_body_rhs[] = {
+	{
+		TOKEN_STMT_LIST,
+		RHS_ON_NONE,
+		bits_off(GP_YIELD) & bits_off(GP_AWAIT) & bits_off(GP_RETURN)
+	},
+};
+
+static const
+struct rhs_settings g_stmt_rhs[] = {
+	{TOKEN_BLOCK_STMT,		RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_VAR_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
+	{TOKEN_EMPTY_STMT,		RHS_ON_NONE, RHS_OFF_ALL},
+	{TOKEN_EXPR_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
+	{TOKEN_IF_STMT,			RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_BREAKABLE_STMT,	RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_CONTINUE_STMT,	RHS_ON_NONE, bits_off(GP_RETURN)},
+	{TOKEN_BREAK_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
+	{TOKEN_RETURN_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
+	{TOKEN_WITH_STMT,		RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_LABELLED_STMT,	RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_THROW_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
+	{TOKEN_TRY_STMT,		RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_DEBUGGER_STMT,	RHS_ON_NONE, RHS_OFF_ALL},
 };
 /*******************************************************************/
 int parse_node_new(enum token_type type,
@@ -130,16 +168,23 @@ int parser_get_token(struct parser *this,
 	return ERR_SUCCESS;
 }
 /*******************************************************************/
+/*
+ * If it returns an error, *out is guaranteed to be NULL.
+ * Explicit node deletion is needed when the success status is ignored.
+ * If success is converted to err and returned, the child is deleted by the
+ * function.
+ */
 static
 int parser_parse(struct parser *this,
 				 enum token_type type,
-				 int flags,
+				 size_t flags,
 				 size_t *q_pos,
 				 struct parse_node **out)
 {
 	int err;
 	size_t i, pos;
 	struct parse_node *node, *child;
+	const struct rhs_settings *rhs;
 	const struct token *token;
 	const size_t in_pos = *q_pos;
 	const int in_flags = flags;
@@ -168,6 +213,8 @@ int parser_parse(struct parser *this,
 	case TOKEN_LEFT_BRACE:
 	case TOKEN_RIGHT_BRACE:
 	case TOKEN_SEMI_COLON:
+	case TOKEN_COMMA:
+	case TOKEN_EQUALS:
 	case TOKEN_VAR:
 		/*
 		 * If the token doesn't match, the q_pos is reset at the end, becoz
@@ -176,7 +223,6 @@ int parser_parse(struct parser *this,
 		 * All of these are literals.
 		 */
 		err = parser_get_token(this, q_pos, &token);
-		printf("%s: type %d, want %d\n", __func__, token_type(token), type);
 		if (!err && token_type(token) == type &&
 			!token_has_unc_esc(token) &&
 			!token_has_hex_esc(token))
@@ -189,14 +235,12 @@ int parser_parse(struct parser *this,
 	case TOKEN_SCRIPT:
 		type = TOKEN_SCRIPT_BODY;
 		err = parser_parse(this, type, flags, q_pos, &child);
-		if (err == ERR_END_OF_FILE)
-			err = ERR_SUCCESS;
 		break;
 	case TOKEN_SCRIPT_BODY:
-		type = TOKEN_STMT_LIST;
-		flags &= bits_off(GP_YIELD);
-		flags &= bits_off(GP_AWAIT);
-		flags &= bits_off(GP_RETURN);
+		rhs = g_script_body_rhs;
+		type = rhs[0].type;
+		flags |= rhs[0].on;
+		flags &= rhs[0].off;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		break;
 		/*******************************************************************/
@@ -207,7 +251,6 @@ int parser_parse(struct parser *this,
 			if (err)
 				break;
 			parse_node_add_child(node, child);
-			child = NULL;
 		}
 		break;
 	case TOKEN_STMT_LIST_ITEM:
@@ -215,18 +258,174 @@ int parser_parse(struct parser *this,
 		err = parser_parse(this, type, flags, q_pos, &child);
 		if (err == ERR_NO_MATCH) {
 			type = TOKEN_DECL;
-			*q_pos = in_pos;
 			flags &= bits_off(GP_RETURN);
 			err = parser_parse(this, type, flags, q_pos, &child);
 		}
 		break;
 		/*******************************************************************/
-	case TOKEN_VAR_STMT:
+	case TOKEN_ASSIGN_EXPR: {
+		static const enum token_type g_ops[] = {
+			TOKEN_EQUALS,
+			TOKEN_MUL_EQUALS,
+			TOKEN_DIV_EQUALS,
+			TOKEN_MOD_EQUALS,
+			TOKEN_PLUS_EQUALS,
+			TOKEN_MINUS_EQUALS,
+			TOKEN_EXP_EQUALS,
+			TOKEN_SHL_EQUALS,
+			TOKEN_SHR_EQUALS,
+			TOKEN_SAR_EQUALS,	/* Signed SHR */
+			TOKEN_LOGICAL_OR_EQUALS,
+			TOKEN_LOGICAL_AND_EQUALS,
+			TOKEN_BITWISE_AND_EQUALS,
+			TOKEN_BITWISE_XOR_EQUALS,
+			TOKEN_BITWISE_OR_EQUALS,
+			TOKEN_COALESCE_EQUALS,
+		};
+
+		/*
+		 * LHS_Expr occurs both as a child and grand(n)-child. Hence, check
+		 * LHS_Expr first
+		 */
+		rhs = g_assign_expr_rhs;
+		type = rhs[0].type;	/* LHS_EXPR */
+		assert(type == TOKEN_LHS_EXPR);
+		flags |= rhs[0].on;
+		flags &= rhs[0].off;
+
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (!err) {
+			/* If LHS_EXPR was parsed, check for operators next */
+			parse_node_add_child(node, child);
+
+			for (i = 0; i < ARRAY_SIZE(g_ops); ++i) {
+				type = g_ops[i];
+				err = parser_parse(this, type, 0, q_pos, &child);
+				/* if no match continue, else break */
+				if (err != ERR_NO_MATCH)
+					break;
+			}
+
+			/* If there was an error, reparse. Else, continue. */
+			if (!err) {
+				parse_node_add_child(node, child);
+				type = TOKEN_ASSIGN_EXPR;
+				flags = in_flags;
+				err = parser_parse(this, type, flags, q_pos, &child);
+				/*
+				 * The end-of-func will deal with the child depending on the
+				 * error.
+				 */
+				break;
+			}
+
+			/* Reparse */
+			*q_pos = in_pos;
+		}
+
+		/*
+		 * TODO: This loop occurs multiple times; simplify by making it a
+		 * common function.
+		 */
+		flags = in_flags;
+
+		/* Start from 1, since 0 is done above. */
+		for (i = 1; i < ARRAY_SIZE(g_assign_expr_rhs); ++i, flags = in_flags) {
+			type = rhs[i].type;
+
+			if (type == TOKEN_YIELD_EXPR && !bits_get(flags, GP_YIELD))
+				continue;
+
+			flags |= rhs[i].on;
+			flags &= rhs[i].off;
+
+			/*
+			 * If success, break. The end-of-func will take care of the child
+			 * insertion
+			 */
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (!err)
+				break;
+			else if (err == ERR_NO_MATCH)
+				continue;
+			else
+				break;
+		}
+		break;
+	}
+	case TOKEN_INITIALIZER:
+		type = TOKEN_EQUALS;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		parse_node_delete(child);
+		type = TOKEN_ASSIGN_EXPR;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		break;
+		/*******************************************************************/
+	case TOKEN_VAR_DECL: {
+		bool is_ident;
+
+		type = TOKEN_BINDING_IDENTIFIER;
+		flags = in_flags & bits_off(GP_IN);
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_BINDING_PATTERN;
+			flags = in_flags & bits_off(GP_IN);
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err)
+			break;
+
+		/* Initializer is optional for Identifier */
+		parse_node_add_child(node, child);
+		is_ident = type == TOKEN_BINDING_IDENTIFIER;
+
+		flags = in_flags;
+		type = TOKEN_INITIALIZER;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err && is_ident)
+			err = ERR_SUCCESS;
+		break;
+	}
+	case TOKEN_VAR_DECL_LIST:
+		while (true) {
+			type = TOKEN_VAR_DECL;
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (err == ERR_END_OF_FILE) {
+				if (parse_node_has_children(node))
+					err = ERR_SUCCESS;
+				break;
+			} else if (err) {
+				break;
+			}
+
+			parse_node_add_child(node, child);
+
+			/* Check for comma. If exists, continue, else break. */
+			type = TOKEN_COMMA;
+			err = parser_parse(this, type, 0, q_pos, &child);
+			if (err) {
+				/* We have at least a proper var decl list */
+				err = ERR_SUCCESS;
+				break;
+			}
+			/* Delete the COMMA node */
+			parse_node_delete(child);
+		}
+		break;
+	case TOKEN_VAR_STMT: {
+		static const enum token_type g_ends[] = {
+			TOKEN_NEW_LINE,
+			TOKEN_SEMI_COLON,
+		};
+
 		type = TOKEN_VAR;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (err)
 			break;
-		parse_node_delete(child);
+		parse_node_delete(child);	/* Delete the VAR node */
 
 		type = TOKEN_VAR_DECL_LIST;
 		flags |= bits_on(GP_IN);
@@ -235,7 +434,6 @@ int parser_parse(struct parser *this,
 			break;
 
 		parse_node_add_child(node, child);
-		child = NULL;
 
 		/*
 		 * SEMI_COLON, EOF and NL end the Var_Stmt.
@@ -246,11 +444,7 @@ int parser_parse(struct parser *this,
 		 * var stmt.
 		 */
 
-		for (i = 0; i < 2; ++i) {
-			static const enum token_type g_ends[] = {
-				TOKEN_NEW_LINE,
-				TOKEN_SEMI_COLON,
-			};
+		for (i = 0; i < ARRAY_SIZE(g_ends); ++i) {
 			type = g_ends[i];
 			err = parser_parse(this, type, 0, q_pos, &child);
 			if (!err) {
@@ -267,6 +461,7 @@ int parser_parse(struct parser *this,
 			}
 		}
 		break;
+	}
 		/*******************************************************************/
 	case TOKEN_BLOCK:
 		type = TOKEN_LEFT_BRACE;
@@ -276,7 +471,6 @@ int parser_parse(struct parser *this,
 		parse_node_delete(child);
 
 		/* stmt_list is optional for block_stmt */
-		pos = *q_pos;	/* Save pos */
 		type = TOKEN_RIGHT_BRACE;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (!err) {
@@ -287,7 +481,6 @@ int parser_parse(struct parser *this,
 		}
 
 		/* Non-Empty Block. */
-		*q_pos = pos;
 		type = TOKEN_STMT_LIST;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		break;
@@ -297,30 +490,16 @@ int parser_parse(struct parser *this,
 		break;
 		/*******************************************************************/
 	case TOKEN_STMT:
-		for (i = 0; i < ARRAY_SIZE(g_stmt_rhs);
-			 ++i, *q_pos = in_pos, flags = in_flags) {
-			type = g_stmt_rhs[i];
+		rhs = g_stmt_rhs;
+		for (i = 0; i < ARRAY_SIZE(g_stmt_rhs); ++i, flags = in_flags) {
+			type = rhs[i].type;
 
 			// check flags before modifying
 			if (type == TOKEN_RETURN_STMT && !bits_get(flags, GP_RETURN))
 				continue;
 
-			switch (type) {
-			case TOKEN_EMPTY_STMT:
-			case TOKEN_DEBUGGER_STMT:
-				flags = 0;
-				break;
-			case TOKEN_VAR_STMT:
-			case TOKEN_EXPR_STMT:
-			case TOKEN_CONTINUE_STMT:
-			case TOKEN_BREAK_STMT:
-			case TOKEN_RETURN_STMT:
-			case TOKEN_THROW_STMT:
-				flags &= bits_off(GP_RETURN);
-				break;
-			default:
-				break;
-			}
+			flags |= rhs[i].on;
+			flags &= rhs[i].off;
 
 			err = parser_parse(this, type, flags, q_pos, &child);
 			if (!err)
@@ -356,6 +535,12 @@ int parser_parse(struct parser *this,
 
 int parser_parse_script(struct parser *this)
 {
-	size_t q_pos = 0;
-	return parser_parse(this, TOKEN_SCRIPT, 0, &q_pos, &this->root);
+	size_t q_pos;
+	int err;
+
+	q_pos = 0;
+	err = parser_parse(this, TOKEN_SCRIPT, 0, &q_pos, &this->root);
+	if (err == ERR_END_OF_FILE)
+		err = ERR_SUCCESS;
+	return err;
 }

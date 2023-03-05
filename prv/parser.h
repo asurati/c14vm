@@ -49,6 +49,12 @@ int	parse_node_new(enum token_type type,
 int	parse_node_delete(struct parse_node *this);
 
 static inline
+bool parse_node_has_children(const struct parse_node *this)
+{
+	return !list_is_empty(&this->nodes);
+}
+
+static inline
 void parse_node_add_child(struct parse_node *this,
 						  struct parse_node *child)
 {
