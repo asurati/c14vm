@@ -28,6 +28,14 @@ struct rhs_settings {
 };
 
 static const
+struct rhs_settings g_lhs_expr_rhs[] = {
+	/* In decr order of length. */
+	{TOKEN_OPT_EXPR, RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_CALL_EXPR, RHS_ON_NONE, RHS_OFF_NONE},
+	{TOKEN_NEW_EXPR, RHS_ON_NONE, RHS_OFF_NONE},
+};
+
+static const
 struct rhs_settings g_assign_expr_rhs[] = {
 	/* Must keep LHS_EXPR first, since that is checked first. */
 	{TOKEN_LHS_EXPR,			RHS_ON_NONE, bits_off(GP_IN)},
@@ -201,8 +209,8 @@ int parser_parse(struct parser *this,
 		return err;
 
 	switch (type) {
-		/*******************************************************************/
 		/* Syntactical Grammar Terminals */
+		/*******************************************************************/
 	case TOKEN_NEW_LINE:
 		/* Find a line-terminator before a token. */
 		pos = *q_pos;
@@ -217,14 +225,9 @@ int parser_parse(struct parser *this,
 	case TOKEN_VAR:
 		/* These are all reserved literals. */
 		err = parser_get_token(this, q_pos, &token);
-		if (err)
-			break;
-
-		err = ERR_NO_MATCH;
-		if (token_type(token) != type ||
-			!token_is_reserved_literal(token))
-			break;
-		err = ERR_SUCCESS;
+		if (!err &&
+			(token_type(token) != type || !token_is_reserved_literal(token)))
+			err = ERR_NO_MATCH;
 		break;
 	case TOKEN_LEFT_BRACE:
 	case TOKEN_RIGHT_BRACE:
@@ -237,14 +240,11 @@ int parser_parse(struct parser *this,
 		 * we throw ERR_NO_MATCH.
 		 */
 		err = parser_get_token(this, q_pos, &token);
-		if (err)
-			break;
-
-		if (token_type(token) != type)
+		if (!err && token_type(token) != type)
 			err = ERR_NO_MATCH;
 		break;
-		/*******************************************************************/
 		/* Syntactical Grammar Non-Terminals */
+		/*******************************************************************/
 	case TOKEN_IDENTIFIER_NAME:
 		err = parser_get_token(this, q_pos, &token);
 		if (err)
@@ -254,6 +254,7 @@ int parser_parse(struct parser *this,
 		if (!token_is_identifier_name(token))
 			break;
 
+		/* If possible, use non-cooked */
 		if (token_is_reserved_word(token)) {
 			parse_node_delete(node);
 			err = parse_node_new(token_type(token), &node);
@@ -264,6 +265,7 @@ int parser_parse(struct parser *this,
 			err = ERR_SUCCESS;
 		}
 		break;
+		/*******************************************************************/
 	case TOKEN_SCRIPT:
 		type = TOKEN_SCRIPT_BODY;
 		err = parser_parse(this, type, flags, q_pos, &child);
@@ -295,6 +297,17 @@ int parser_parse(struct parser *this,
 		}
 		break;
 		/*******************************************************************/
+	case TOKEN_LHS_EXPR:
+		rhs = g_lhs_expr_rhs;
+		for (i = 0; i < sizeof(g_lhs_expr_rhs); ++i, flags = in_flags) {
+			type = rhs[i].type;
+			flags |= rhs[i].on;
+			flags &= rhs[i].off;
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (err != ERR_NO_MATCH)
+				break;
+		}
+		break;
 	case TOKEN_ASSIGN_EXPR: {
 		static const enum token_type g_ops[] = {
 			TOKEN_EQUALS,
@@ -376,11 +389,7 @@ int parser_parse(struct parser *this,
 			 * insertion
 			 */
 			err = parser_parse(this, type, flags, q_pos, &child);
-			if (!err)
-				break;
-			else if (err == ERR_NO_MATCH)
-				continue;
-			else
+			if (err != ERR_NO_MATCH)
 				break;
 		}
 		break;
@@ -561,6 +570,8 @@ int parser_parse(struct parser *this,
 		printf("%s: unsup %d\n", __func__, type);
 		if (type >= TOKEN_SCRIPT)
 			printf("%s: unsup non-term %d\n", __func__, type - TOKEN_SCRIPT);
+		else if (type >= TOKEN_IDENTIFIER)
+			printf("%s: unsup ident %d\n", __func__, type - TOKEN_IDENTIFIER);
 		exit(0);
 	}
 

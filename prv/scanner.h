@@ -72,7 +72,7 @@ enum token_type {
 	 * These are identifiers. Their raw forms may contain unc escs, but never a
 	 * hex esc.
 	 */
-	TOKEN_IDENTIFIER,
+	TOKEN_IDENTIFIER,	/* 0 */
 	TOKEN_AS,
 	TOKEN_ASYNC,
 	TOKEN_AWAIT,
@@ -82,7 +82,7 @@ enum token_type {
 	TOKEN_CLASS,
 	TOKEN_CONST,
 	TOKEN_CONTINUE,
-	TOKEN_DEBUGGER,
+	TOKEN_DEBUGGER,	/* 10 */
 	TOKEN_DEFAULT,
 	TOKEN_DELETE,
 	TOKEN_DO,
@@ -92,7 +92,7 @@ enum token_type {
 	TOKEN_EXTENDS,
 	TOKEN_FALSE,
 	TOKEN_FINALLY,
-	TOKEN_FOR,
+	TOKEN_FOR,	/* 20 */
 	TOKEN_FROM,
 	TOKEN_FUNCTION,
 	TOKEN_GET,
@@ -102,7 +102,7 @@ enum token_type {
 	TOKEN_IN,
 	TOKEN_INSTANCEOF,
 	TOKEN_INTERFACE,
-	TOKEN_LET,
+	TOKEN_LET,	/* 30 */
 	TOKEN_META,
 	TOKEN_NEW,
 	TOKEN_NULL,
@@ -112,7 +112,7 @@ enum token_type {
 	TOKEN_PROTECTED,
 	TOKEN_PUBLIC,
 	TOKEN_RETURN,
-	TOKEN_SET,
+	TOKEN_SET,	/* 40 */
 	TOKEN_STATIC,
 	TOKEN_SUPER,
 	TOKEN_SWITCH,
@@ -122,7 +122,7 @@ enum token_type {
 	TOKEN_TRUE,
 	TOKEN_TRY,
 	TOKEN_TYPEOF,
-	TOKEN_VAR,
+	TOKEN_VAR,	/* 50 */
 	TOKEN_VOID,
 	TOKEN_WHILE,
 	TOKEN_WITH,
@@ -165,6 +165,9 @@ enum token_type {
 	TOKEN_ARROW_FUNC,	/* 30 */
 	TOKEN_ASYNC_ARROW_FUNC,
 	TOKEN_IDENTIFIER_NAME,
+	TOKEN_OPT_EXPR,
+	TOKEN_CALL_EXPR,
+	TOKEN_NEW_EXPR,
 };
 
 struct token_location {
