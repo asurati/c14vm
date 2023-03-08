@@ -156,6 +156,7 @@ int parser_parse(struct parser *this,
 	const char16_t *cooked;
 	const size_t in_pos = *q_pos;
 	const int in_flags = flags;
+	const enum token_type in_type = type;
 
 	*out = child = NULL;
 
@@ -178,6 +179,9 @@ int parser_parse(struct parser *this,
 			err = ERR_NO_MATCH;
 		break;
 	case TOKEN_VAR:
+	case TOKEN_SUPER:
+	case TOKEN_IMPORT:
+	case TOKEN_THIS:
 		/* These are all reserved literals. */
 		err = parser_get_token(this, q_pos, &token);
 		if (!err &&
@@ -200,6 +204,15 @@ int parser_parse(struct parser *this,
 		break;
 		/* Syntactical Grammar Non-Terminals */
 		/*******************************************************************/
+	case PRIVATE_IDENTIFIER:
+		type = TOKEN_NUMBER_SIGN;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);	/* Consume # */
+		type = IDENTIFIER_NAME;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		break;
 	case IDENTIFIER_NAME:
 		err = parser_get_token(this, q_pos, &token);
 		if (err)
@@ -252,6 +265,308 @@ int parser_parse(struct parser *this,
 		}
 		break;
 		/*******************************************************************/
+	case PRIMARY_EXPRESSION:
+		type = TOKEN_THIS;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_NULL;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_TRUE;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_FALSE;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_NUMBER;	/* Same as NumericLiteral */
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_STRING;	/* Same as StringLiteral */
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = ARRAY_LITERAL;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = OBJECT_LITERAL;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = FUNCTION_EXPRESSION;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = CLASS_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = GENERATOR_EXPRESSION;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = ASYNC_FUNCTION_EXPRESSION;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = ASYNC_GENERATOR_EXPRESSION;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = REGEXP_LITERAL;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = PARENTHESIZED_EXPRESSION;	/* restrictive grammar */
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = IDENTIFIER_REFERENCE;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TEMPLATE_LITERAL;
+			flags &= bits_off(GP_TAGGED);
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		break;
+		/*******************************************************************/
+	case IMPORT_META:
+		type = TOKEN_IMPORT;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		type = TOKEN_DOT;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		type = TOKEN_META;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		break;
+	case NEW_TARGET:
+		type = TOKEN_NEW;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		type = TOKEN_DOT;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		type = TOKEN_TARGET;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		break;
+	case META_PROPERTY:
+		type = NEW_TARGET;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = IMPORT_META;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		break;
+	case SUPER_PROPERTY:
+		type = TOKEN_SUPER;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);	/* Consume 'super' */
+
+		type = ARRAY_EXPRESSION;
+		flags |= bits_on(GP_IN);
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = DOT_IDENTIFIER_NAME;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		break;
+	case MEMBER_EXPRESSION:	/* left-associative */
+		type = SUPER_PROPERTY;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = META_PROPERTY;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_NEW;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = PRIMARY_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+
+		if (err)
+			break;
+
+		if (type == TOKEN_NEW) {
+			type = MEMBER_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (err)
+				break;
+			type = ARGUMENTS;
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (err)
+				break;
+		}
+
+		/*
+		 * Now we must check in a loop for:
+		 *	Array Expr (i.e. [ Expr ])
+		 *	. IdentifierName
+		 *	. PrivateIdentifier
+		 *	TemplateLiteral
+		 */
+		type = MEMBER_EXPRESSION_POST;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		break;
+		/*******************************************************************/
+	case NEW_EXPRESSION:	/* right-associative */
+		/* NewExpr has starting with 'new':
+		 * 	new NewExpr
+		 * 	new MemberExpr Arguments
+		 * Check the longest first (MemberExpr)
+		 */
+		type = MEMBER_EXPRESSION;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_NEW;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+
+		if (err)
+			break;
+
+		parse_node_add_child(node, child);
+		if (type == MEMBER_EXPRESSION)
+			break;
+
+		type = NEW_EXPRESSION;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		break;
+		/*******************************************************************/
+	case IMPORT_CALL:
+		type = TOKEN_IMPORT;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);	/* Consume 'import' */
+
+		type = TOKEN_LEFT_PAREN;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);	/* Consume ( */
+
+		type = ASSIGNMENT_EXPRESSION;
+		flags |= bits_on(GP_IN);
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err)
+			break;
+
+		type = TOKEN_RIGHT_PAREN;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);	/* Consume ) */
+		break;
+	case SUPER_CALL:
+		type = TOKEN_SUPER;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);	/* Consume 'super' */
+
+		type = ARGUMENTS;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		break;
+	case CALL_EXPRESSION:	/* left-associative */
+		type = SUPER_CALL;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = IMPORT_CALL;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = CALL_MEMBER_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err)
+			break;
+		parse_node_add_child(node, child);
+
+		/*
+		 * Now we must check for these to follow, in a loop. If none-follow,
+		 * done. Ignore error.
+		 * 	Arguments
+		 *	Array Expr. [ Expr ]
+		 *	. IdentifierName
+		 *	TemplateLiteral
+		 * 	. PrivateIdentifier
+		 * 	TemplateLiteral
+		 * 	IdentifierName
+		 * 	PrivateIdentifier
+		 */
+		type = CALL_EXPRESSION_POST;
+		flags = in_flags;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err)
+			err = ERR_SUCCESS;
+		break;
+		/*******************************************************************/
+	case OPTIONAL_CHAIN_POST:
+	case CALL_EXPRESSION_POST:
+	case MEMBER_EXPRESSION_POST:
+		/*
+		 * Now we must check for these to follow, in a loop. If none-follow,
+		 * done. APplies to both OptionalChain and CallExpr.
+		 * 	Arguments
+		 *	Array Expr. [ Expr ]
+		 *	. IdentifierName
+		 *	TemplateLiteral
+		 * 	. PrivateIdentifier
+		 * 	TemplateLiteral
+		 * 	IdentifierName
+		 * 	PrivateIdentifier
+		 */
+		while (true) {
+			err = ERR_NO_MATCH;
+
+			/* ARGUMENTS not applicable to MEMBER_EXPRESSION_POST */
+			if (in_type != MEMBER_EXPRESSION_POST) {
+				flags = in_flags;
+				type = ARGUMENTS;
+				err = parser_parse(this, type, flags, q_pos, &child);
+			}
+			if (err == ERR_NO_MATCH) {
+				type = ARRAY_EXPRESSION;
+				flags |= bits_on(GP_IN);
+				err = parser_parse(this, type, flags, q_pos, &child);
+			}
+			if (err == ERR_NO_MATCH) {
+				type = TEMPLATE_LITERAL;
+				flags = in_flags | bits_on(GP_TAGGED);
+				err = parser_parse(this, type, flags, q_pos, &child);
+			}
+			if (err == ERR_NO_MATCH) {
+				type = DOT_IDENTIFIER_NAME;
+				err = parser_parse(this, type, 0, q_pos, &child);
+			}
+			if (err == ERR_NO_MATCH) {
+				type = DOT_PRIVATE_IDENTIFIER;
+				err = parser_parse(this, type, 0, q_pos, &child);
+			}
+			if (err)
+				break;
+			parse_node_add_child(node, child);
+		}
+		break;
 	case OPTIONAL_CHAIN:	/* left-associative */
 		type = TOKEN_QUESTION_DOT;
 		err = parser_parse(this, type, 0, q_pos, &child);
@@ -288,15 +603,13 @@ int parser_parse(struct parser *this,
 		}
 
 		/* We matched ?., but could not match its followers. Syntax Err. */
-		if (err == ERR_NO_MATCH)
-			err = ERR_SYNTAX;
 		if (err)
 			break;
 		parse_node_add_child(node, child);
 
 		/*
 		 * Now we must check for these to follow, in a loop. If none-follow,
-		 * done.
+		 * done. Ignore Error.
 		 * 	Arguments
 		 *	Array Expr. [ Expr ]
 		 *	. IdentifierName
@@ -306,46 +619,11 @@ int parser_parse(struct parser *this,
 		 * 	IdentifierName
 		 * 	PrivateIdentifier
 		 */
-
-		while (true) {
-			flags = in_flags;
-			type = ARGUMENTS;
-			err = parser_parse(this, type, flags, q_pos, &child);
-			if (err == ERR_NO_MATCH) {
-				type = ARRAY_EXPRESSION;
-				flags |= bits_on(GP_IN);
-				err = parser_parse(this, type, flags, q_pos, &child);
-			}
-			if (err == ERR_NO_MATCH) {
-				type = TEMPLATE_LITERAL;
-				flags = in_flags | bits_on(GP_TAGGED);
-				err = parser_parse(this, type, flags, q_pos, &child);
-			}
-			if (err == ERR_NO_MATCH) {
-				type = TOKEN_DOT;
-				err = parser_parse(this, type, 0, q_pos, &child);
-				if (!err) {
-					parse_node_delete(child);	/* Consume dot */
-
-					type = IDENTIFIER_NAME;
-					err = parser_parse(this, type, 0, q_pos, &child);
-					if (err == ERR_NO_MATCH) {
-						type = PRIVATE_IDENTIFIER;
-						err = parser_parse(this, type, 0, q_pos, &child);
-					}
-
-					/* If couldn't find the ident after a ., syntax err. */
-					if (err == ERR_NO_MATCH)
-						err = ERR_SYNTAX;
-				}
-			}
-			if (err) {
-				if (err == ERR_NO_MATCH)
-					err = ERR_SUCCESS;
-				break;
-			}
-			parse_node_add_child(node, child);
-		}
+		type = OPTIONAL_CHAIN_POST;
+		flags = in_flags;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err)
+			err = ERR_SUCCESS;
 		break;
 	case OPTIONAL_EXPRESSION:	/* left-associative */
 		/* In decr. order of length */
@@ -374,6 +652,7 @@ int parser_parse(struct parser *this,
 			parse_node_add_child(node, child);
 		}
 		break;
+		/*******************************************************************/
 	case LHS_EXPRESSION:
 		/* In decr. order of length. */
 		type = OPTIONAL_EXPRESSION;
@@ -467,7 +746,7 @@ int parser_parse(struct parser *this,
 			/* This is a reserved word. Fail. TODO await and yield. */
 			parse_node_delete(child);
 			child = NULL;
-			err = ERR_SYNTAX;
+			err = ERR_NO_MATCH;
 		}
 		break;
 		/*******************************************************************/
@@ -562,7 +841,6 @@ int parser_parse(struct parser *this,
 			 * If still no match, then this is a syntax error, since we have
 			 * already mapped 'var' and a decl. list.
 			 */
-			err = ERR_SYNTAX;
 		}
 		break;
 		/*******************************************************************/
