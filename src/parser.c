@@ -9,68 +9,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/*
- * on/off wrt the grammar parameters received by the production whose rhs
- * settings are represented by this structure.
- *
- * flags |= on (bits_on() | bits_on() | ...)
- * flags &= off (bits_off() & bits_off() & ...)
- */
-#define RHS_ON_NONE		0
-#define RHS_ON_ALL		((size_t)-1)
-#define RHS_OFF_NONE	((size_t)-1)
-#define RHS_OFF_ALL		0
-
-struct rhs_settings {
-	enum token_type	type;
-	size_t		on;
-	size_t		off;
-};
-
-static const
-struct rhs_settings g_lhs_expr_rhs[] = {
-	/* In decr order of length. */
-	{TOKEN_OPT_EXPR, RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_CALL_EXPR, RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_NEW_EXPR, RHS_ON_NONE, RHS_OFF_NONE},
-};
-
-static const
-struct rhs_settings g_assign_expr_rhs[] = {
-	/* Must keep LHS_EXPR first, since that is checked first. */
-	{TOKEN_LHS_EXPR,			RHS_ON_NONE, bits_off(GP_IN)},
-
-	{TOKEN_COND_EXPR,			RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_YIELD_EXPR,			RHS_ON_NONE, bits_off(GP_YIELD)},
-	{TOKEN_ARROW_FUNC,			RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_ASYNC_ARROW_FUNC,	RHS_ON_NONE, RHS_OFF_NONE},
-};
-
-static const
-struct rhs_settings g_script_body_rhs[] = {
-	{
-		TOKEN_STMT_LIST,
-		RHS_ON_NONE,
-		bits_off(GP_YIELD) & bits_off(GP_AWAIT) & bits_off(GP_RETURN)
-	},
-};
-
-static const
-struct rhs_settings g_stmt_rhs[] = {
-	{TOKEN_BLOCK_STMT,		RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_VAR_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
-	{TOKEN_EMPTY_STMT,		RHS_ON_NONE, RHS_OFF_ALL},
-	{TOKEN_EXPR_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
-	{TOKEN_IF_STMT,			RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_BREAKABLE_STMT,	RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_CONTINUE_STMT,	RHS_ON_NONE, bits_off(GP_RETURN)},
-	{TOKEN_BREAK_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
-	{TOKEN_RETURN_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
-	{TOKEN_WITH_STMT,		RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_LABELLED_STMT,	RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_THROW_STMT,		RHS_ON_NONE, bits_off(GP_RETURN)},
-	{TOKEN_TRY_STMT,		RHS_ON_NONE, RHS_OFF_NONE},
-	{TOKEN_DEBUGGER_STMT,	RHS_ON_NONE, RHS_OFF_ALL},
+static const enum token_type g_assign_expr_ops[] = {
+	TOKEN_EQUALS,
+	TOKEN_MUL_EQUALS,
+	TOKEN_DIV_EQUALS,
+	TOKEN_MOD_EQUALS,
+	TOKEN_PLUS_EQUALS,
+	TOKEN_MINUS_EQUALS,
+	TOKEN_EXP_EQUALS,
+	TOKEN_SHL_EQUALS,
+	TOKEN_SHR_EQUALS,	/* Unsigned SHR */
+	TOKEN_SAR_EQUALS,	/* Signed SHR */
+	TOKEN_LOGICAL_OR_EQUALS,
+	TOKEN_LOGICAL_AND_EQUALS,
+	TOKEN_BITWISE_AND_EQUALS,
+	TOKEN_BITWISE_XOR_EQUALS,
+	TOKEN_BITWISE_OR_EQUALS,
+	TOKEN_COALESCE_EQUALS,
 };
 /*******************************************************************/
 int parse_node_new(enum token_type type,
@@ -194,9 +149,9 @@ int parser_parse(struct parser *this,
 				 struct parse_node **out)
 {
 	int err;
+	bool is_ident, has_opt_chain;
 	size_t i, pos, cooked_len;
 	struct parse_node *node, *child;
-	const struct rhs_settings *rhs;
 	const struct token *token;
 	const char16_t *cooked;
 	const size_t in_pos = *q_pos;
@@ -245,7 +200,7 @@ int parser_parse(struct parser *this,
 		break;
 		/* Syntactical Grammar Non-Terminals */
 		/*******************************************************************/
-	case TOKEN_IDENTIFIER_NAME:
+	case IDENTIFIER_NAME:
 		err = parser_get_token(this, q_pos, &token);
 		if (err)
 			break;
@@ -266,20 +221,20 @@ int parser_parse(struct parser *this,
 		}
 		break;
 		/*******************************************************************/
-	case TOKEN_SCRIPT:
-		type = TOKEN_SCRIPT_BODY;
+	case SCRIPT:
+		type = SCRIPT_BODY;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		break;
-	case TOKEN_SCRIPT_BODY:
-		rhs = g_script_body_rhs;
-		type = rhs[0].type;
-		flags |= rhs[0].on;
-		flags &= rhs[0].off;
-		err = parser_parse(this, type, flags, q_pos, &child);
+	case SCRIPT_BODY:
+		type = STATEMENT_LIST;
+		flags &= bits_off(GP_YIELD),
+			flags &= bits_off(GP_AWAIT),
+			flags &= bits_off(GP_RETURN),
+			err = parser_parse(this, type, flags, q_pos, &child);
 		break;
 		/*******************************************************************/
-	case TOKEN_STMT_LIST:
-		type = TOKEN_STMT_LIST_ITEM;
+	case STATEMENT_LIST:	/* left-associative */
+		type = STATEMENT_LIST_ITEM;
 		while (true) {
 			err = parser_parse(this, type, flags, q_pos, &child);
 			if (err)
@@ -287,64 +242,165 @@ int parser_parse(struct parser *this,
 			parse_node_add_child(node, child);
 		}
 		break;
-	case TOKEN_STMT_LIST_ITEM:
-		type = TOKEN_STMT;
+	case STATEMENT_LIST_ITEM:
+		type = STATEMENT;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		if (err == ERR_NO_MATCH) {
-			type = TOKEN_DECL;
+			type = DECLARATION;
 			flags &= bits_off(GP_RETURN);
 			err = parser_parse(this, type, flags, q_pos, &child);
 		}
 		break;
 		/*******************************************************************/
-	case TOKEN_LHS_EXPR:
-		rhs = g_lhs_expr_rhs;
-		for (i = 0; i < sizeof(g_lhs_expr_rhs); ++i, flags = in_flags) {
-			type = rhs[i].type;
-			flags |= rhs[i].on;
-			flags &= rhs[i].off;
+	case OPTIONAL_CHAIN:	/* left-associative */
+		type = TOKEN_QUESTION_DOT;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+
+		/*
+		 * Now we must check for these first, to follow ?. :
+		 * 	Arguments
+		 * 	[ Expr ] (also called ArrayExpr; != ArrayLiteral)
+		 * 	TemplateLiteral
+		 * 	IdentifierName
+		 * 	PrivateIdentifier
+		 */
+		type = ARGUMENTS;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = ARRAY_EXPRESSION;	/* [ Expression ] */
+			flags |= bits_on(GP_IN);
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = IDENTIFIER_NAME;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TEMPLATE_LITERAL;
+			flags = in_flags | bits_on(GP_TAGGED);
 			err = parser_parse(this, type, flags, q_pos, &child);
-			if (err != ERR_NO_MATCH)
+		}
+		if (err == ERR_NO_MATCH) {
+			type = PRIVATE_IDENTIFIER;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+
+		/* We matched ?., but could not match its followers. Syntax Err. */
+		if (err == ERR_NO_MATCH)
+			err = ERR_SYNTAX;
+		if (err)
+			break;
+		parse_node_add_child(node, child);
+
+		/*
+		 * Now we must check for these to follow, in a loop. If none-follow,
+		 * done.
+		 * 	Arguments
+		 *	Array Expr. [ Expr ]
+		 *	. IdentifierName
+		 *	TemplateLiteral
+		 * 	. PrivateIdentifier
+		 * 	TemplateLiteral
+		 * 	IdentifierName
+		 * 	PrivateIdentifier
+		 */
+
+		while (true) {
+			flags = in_flags;
+			type = ARGUMENTS;
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (err == ERR_NO_MATCH) {
+				type = ARRAY_EXPRESSION;
+				flags |= bits_on(GP_IN);
+				err = parser_parse(this, type, flags, q_pos, &child);
+			}
+			if (err == ERR_NO_MATCH) {
+				type = TEMPLATE_LITERAL;
+				flags = in_flags | bits_on(GP_TAGGED);
+				err = parser_parse(this, type, flags, q_pos, &child);
+			}
+			if (err == ERR_NO_MATCH) {
+				type = TOKEN_DOT;
+				err = parser_parse(this, type, 0, q_pos, &child);
+				if (!err) {
+					parse_node_delete(child);	/* Consume dot */
+
+					type = IDENTIFIER_NAME;
+					err = parser_parse(this, type, 0, q_pos, &child);
+					if (err == ERR_NO_MATCH) {
+						type = PRIVATE_IDENTIFIER;
+						err = parser_parse(this, type, 0, q_pos, &child);
+					}
+
+					/* If couldn't find the ident after a ., syntax err. */
+					if (err == ERR_NO_MATCH)
+						err = ERR_SYNTAX;
+				}
+			}
+			if (err) {
+				if (err == ERR_NO_MATCH)
+					err = ERR_SUCCESS;
 				break;
+			}
+			parse_node_add_child(node, child);
 		}
 		break;
-	case TOKEN_ASSIGN_EXPR: {
-		static const enum token_type g_ops[] = {
-			TOKEN_EQUALS,
-			TOKEN_MUL_EQUALS,
-			TOKEN_DIV_EQUALS,
-			TOKEN_MOD_EQUALS,
-			TOKEN_PLUS_EQUALS,
-			TOKEN_MINUS_EQUALS,
-			TOKEN_EXP_EQUALS,
-			TOKEN_SHL_EQUALS,
-			TOKEN_SHR_EQUALS,
-			TOKEN_SAR_EQUALS,	/* Signed SHR */
-			TOKEN_LOGICAL_OR_EQUALS,
-			TOKEN_LOGICAL_AND_EQUALS,
-			TOKEN_BITWISE_AND_EQUALS,
-			TOKEN_BITWISE_XOR_EQUALS,
-			TOKEN_BITWISE_OR_EQUALS,
-			TOKEN_COALESCE_EQUALS,
-		};
+	case OPTIONAL_EXPRESSION:	/* left-associative */
+		/* In decr. order of length */
+		type = CALL_EXPRESSION;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = MEMBER_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
 
+		if (err)
+			break;
+
+		/* Add call/memexpr into the node */
+		parse_node_add_child(node, child);
+
+		/* There must be OPTIONAL_CHAINs */
+		has_opt_chain = false;
+		type = OPTIONAL_CHAIN;
+		while (true) {
+			err = parser_parse(this, type, flags, q_pos, &child);
+			if (err) {
+				err = has_opt_chain ? ERR_SUCCESS : err;
+				break;
+			}
+			parse_node_add_child(node, child);
+		}
+		break;
+	case LHS_EXPRESSION:
+		/* In decr. order of length. */
+		type = OPTIONAL_EXPRESSION;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = CALL_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = NEW_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		break;
+	case ASSIGNMENT_EXPRESSION:	/* right-associative */
 		/*
 		 * LHS_Expr occurs both as a child and grand(n)-child. Hence, check
 		 * LHS_Expr first
 		 */
-		rhs = g_assign_expr_rhs;
-		type = rhs[0].type;	/* LHS_EXPR */
-		assert(type == TOKEN_LHS_EXPR);
-		flags |= rhs[0].on;
-		flags &= rhs[0].off;
-
+		type = LHS_EXPRESSION;
+		flags &= bits_off(GP_IN);
 		err = parser_parse(this, type, flags, q_pos, &child);
 		if (!err) {
 			/* If LHS_EXPR was parsed, check for operators next */
-			parse_node_add_child(node, child);
+			parse_node_add_child(node, child);	/* Add LHS_EXPRESSION */
 
-			for (i = 0; i < ARRAY_SIZE(g_ops); ++i) {
-				type = g_ops[i];
+			for (i = 0; i < ARRAY_SIZE(g_assign_expr_ops); ++i) {
+				type = g_assign_expr_ops[i];
 				err = parser_parse(this, type, 0, q_pos, &child);
 				/* if no match continue, else break */
 				if (err != ERR_NO_MATCH)
@@ -352,9 +408,13 @@ int parser_parse(struct parser *this,
 			}
 
 			/* If there was an error, reparse. Else, continue. */
-			if (!err) {
-				parse_node_add_child(node, child);
-				type = TOKEN_ASSIGN_EXPR;
+			if (err) {
+				/* Reparse */
+				*q_pos = in_pos;
+			} else {
+				parse_node_add_child(node, child);	/* Add the operator */
+
+				type = ASSIGNMENT_EXPRESSION;
 				flags = in_flags;
 				err = parser_parse(this, type, flags, q_pos, &child);
 				/*
@@ -363,100 +423,87 @@ int parser_parse(struct parser *this,
 				 */
 				break;
 			}
-
-			/* Reparse */
-			*q_pos = in_pos;
 		}
 
-		/*
-		 * TODO: This loop occurs multiple times; simplify by making it a
-		 * common function.
-		 */
+		/* Reparse */
+		type = ASYNC_ARROW_FUNCTION;
 		flags = in_flags;
-
-		/* Start from 1, since 0 is done above. */
-		for (i = 1; i < ARRAY_SIZE(g_assign_expr_rhs); ++i, flags = in_flags) {
-			type = rhs[i].type;
-
-			if (type == TOKEN_YIELD_EXPR && !bits_get(flags, GP_YIELD))
-				continue;
-
-			flags |= rhs[i].on;
-			flags &= rhs[i].off;
-
-			/*
-			 * If success, break. The end-of-func will take care of the child
-			 * insertion
-			 */
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH && bits_get(in_flags, GP_YIELD)) {
+			type = YIELD_EXPRESSION;
+			flags &= bits_off(GP_YIELD);
 			err = parser_parse(this, type, flags, q_pos, &child);
-			if (err != ERR_NO_MATCH)
-				break;
 		}
+		if (err == ERR_NO_MATCH) {
+			type = ARROW_FUNCTION;
+			flags = in_flags;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = CONDITIONAL_EXPRESSION;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		/* func-end will take care of child. */
 		break;
-	}
-	case TOKEN_INITIALIZER:
+		/*******************************************************************/
+	case INITIALIZER:
 		type = TOKEN_EQUALS;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (err)
 			break;
 
-		parse_node_delete(child);
-		type = TOKEN_ASSIGN_EXPR;
+		parse_node_delete(child);	/* Consume = */
+		type = ASSIGNMENT_EXPRESSION;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		break;
 		/*******************************************************************/
-	case TOKEN_BINDING_IDENTIFIER:
-		type = TOKEN_IDENTIFIER_NAME;
+	case BINDING_IDENTIFIER:
+		type = IDENTIFIER_NAME;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (err)
 			break;
 
 		if (parse_node_is_reserved_word(child)) {
-			/* This is a reserved word. Fail */
+			/* This is a reserved word. Fail. TODO await and yield. */
 			parse_node_delete(child);
 			child = NULL;
-			err = ERR_NO_MATCH;	/* TODO: Convert to SyntaxError */
+			err = ERR_SYNTAX;
 		}
-		/* TODO: Check for await and yield errors */
 		break;
 		/*******************************************************************/
-	case TOKEN_VAR_DECL: {
-		bool is_ident;
-
-		type = TOKEN_BINDING_IDENTIFIER;
-		flags = in_flags & bits_off(GP_IN);
+	case VARIABLE_DECLARATION:
+		type = BINDING_IDENTIFIER;
+		flags &= bits_off(GP_IN);
 		err = parser_parse(this, type, flags, q_pos, &child);
 		if (err == ERR_NO_MATCH) {
-			type = TOKEN_BINDING_PATTERN;
-			flags = in_flags & bits_off(GP_IN);
+			type = BINDING_PATTERN;
 			err = parser_parse(this, type, flags, q_pos, &child);
 		}
+
 		if (err)
 			break;
 
-		/* Initializer is optional for Identifier */
 		parse_node_add_child(node, child);
-		is_ident = type == TOKEN_BINDING_IDENTIFIER;
+		is_ident = type == BINDING_IDENTIFIER;
 
+		/* Initializer is optional for Identifier */
 		flags = in_flags;
-		type = TOKEN_INITIALIZER;
+		type = INITIALIZER;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		if (err && is_ident)
 			err = ERR_SUCCESS;
+		/* The func-end will add the initializer to the node */
 		break;
-	}
-	case TOKEN_VAR_DECL_LIST:
+	case VARIABLE_DECLARATION_LIST:	/* left-associative */
 		while (true) {
-			type = TOKEN_VAR_DECL;
+			type = VARIABLE_DECLARATION;
 			err = parser_parse(this, type, flags, q_pos, &child);
-			if (err == ERR_END_OF_FILE) {
+			if (err) {
+				/* If we have a valid list, ignore the error. */
 				if (parse_node_has_children(node))
-					err = ERR_SUCCESS;
-				break;
-			} else if (err) {
+					err = ERR_SUCCESS;	/* Error handling later. */
 				break;
 			}
-
 			parse_node_add_child(node, child);
 
 			/* Check for comma. If exists, continue, else break. */
@@ -467,109 +514,164 @@ int parser_parse(struct parser *this,
 				err = ERR_SUCCESS;
 				break;
 			}
-			/* Delete the COMMA node */
+
+			/*
+			 * Delete the COMMA node. The child ptr will be set to null by the
+			 * call to parser_parse in this loop.
+			 */
 			parse_node_delete(child);
 		}
 		break;
-	case TOKEN_VAR_STMT: {
-		static const enum token_type g_ends[] = {
-			TOKEN_NEW_LINE,
-			TOKEN_SEMI_COLON,
-		};
-
+	case VARIABLE_STATEMENT:
 		type = TOKEN_VAR;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (err)
 			break;
 		parse_node_delete(child);	/* Delete the VAR node */
 
-		type = TOKEN_VAR_DECL_LIST;
+		type = VARIABLE_DECLARATION_LIST;
 		flags |= bits_on(GP_IN);
 		err = parser_parse(this, type, flags, q_pos, &child);
 		if (err)
 			break;
-
 		parse_node_add_child(node, child);
 
 		/*
 		 * SEMI_COLON, EOF and NL end the Var_Stmt.
 		 *
 		 * Check NL first. The reason is:
-		 *	var a = 123 <nl> ;
-		 * should treat the ; as an empty statement instead of as part of the
-		 * var stmt.
+		 * 		var a = 123 <nl> ;
+		 * should treat the ; as an empty stmt instead of as part of the var
+		 * stmt.
 		 */
 
-		for (i = 0; i < ARRAY_SIZE(g_ends); ++i) {
-			type = g_ends[i];
+		type = TOKEN_NEW_LINE;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = TOKEN_SEMI_COLON;
 			err = parser_parse(this, type, 0, q_pos, &child);
-			if (!err) {
-				parse_node_delete(child);
-				child = NULL;
-				break;
-			} else if (err == ERR_END_OF_FILE) {
-				err = ERR_SUCCESS;
-				break;
-			} else if (err == ERR_NO_MATCH) {
-				continue;
-			} else {
-				break;
-			}
+		}
+
+		if (!err) {
+			parse_node_delete(child);	/* Consume the nl/; */
+			child = NULL;
+		} else if (err == ERR_END_OF_FILE) {
+			err = ERR_SUCCESS;
+		} else if (err == ERR_NO_MATCH) {
+			/*
+			 * If still no match, then this is a syntax error, since we have
+			 * already mapped 'var' and a decl. list.
+			 */
+			err = ERR_SYNTAX;
 		}
 		break;
-	}
 		/*******************************************************************/
-	case TOKEN_BLOCK:
+	case BLOCK:
 		type = TOKEN_LEFT_BRACE;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (err)
 			break;
 		parse_node_delete(child);
 
-		/* stmt_list is optional for block_stmt */
+		/* STATEMENT_LIST is optional for BLOCK */
 		type = TOKEN_RIGHT_BRACE;
 		err = parser_parse(this, type, 0, q_pos, &child);
 		if (!err) {
-			/* Empty Block Stmt */
+			/* Empty Block */
 			parse_node_delete(child);
 			child = NULL;
 			break;
 		}
 
 		/* Non-Empty Block. */
-		type = TOKEN_STMT_LIST;
+		type = STATEMENT_LIST;
 		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err)
+			break;
+
+		parse_node_add_child(node, child);
+
+		/* There must be a }, after the STATEMENT_LIST */
+		type = TOKEN_RIGHT_BRACE;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);
+		child = NULL;
 		break;
-	case TOKEN_BLOCK_STMT:
-		type = TOKEN_BLOCK;
+	case BLOCK_STATEMENT:
+		type = BLOCK;
 		err = parser_parse(this, type, flags, q_pos, &child);
 		break;
 		/*******************************************************************/
-	case TOKEN_STMT:
-		rhs = g_stmt_rhs;
-		for (i = 0; i < ARRAY_SIZE(g_stmt_rhs); ++i, flags = in_flags) {
-			type = rhs[i].type;
-
-			// check flags before modifying
-			if (type == TOKEN_RETURN_STMT && !bits_get(flags, GP_RETURN))
-				continue;
-
-			flags |= rhs[i].on;
-			flags &= rhs[i].off;
-
+	case STATEMENT:
+		/* Keep EXPRESSION_STATEMENT last, as others begin with keywords. */
+		type = BLOCK_STATEMENT;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err == ERR_NO_MATCH) {
+			type = VARIABLE_STATEMENT;
+			flags = in_flags & bits_off(GP_RETURN);
 			err = parser_parse(this, type, flags, q_pos, &child);
-			if (!err)
-				break;
-			else if (err == ERR_NO_MATCH)
-				continue;
-			else
-				break;
+		}
+		if (err == ERR_NO_MATCH) {
+			type = EMPTY_STATEMENT;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		/* EXPRESSION_STATEMENT at the end. */
+		if (err == ERR_NO_MATCH) {
+			type = IF_STATEMENT;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = BREAKABLE_STATEMENT;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = CONTINUE_STATEMENT;
+			flags = in_flags & bits_off(GP_RETURN);
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = BREAK_STATEMENT;
+			flags = in_flags & bits_off(GP_RETURN);
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH && bits_get(in_flags, GP_RETURN)) {
+			type = RETURN_STATEMENT;
+			flags = in_flags & bits_off(GP_RETURN);
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = WITH_STATEMENT;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = LABELLED_STATEMENT;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = THROW_STATEMENT;
+			flags = in_flags & bits_off(GP_RETURN);
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = TRY_STATEMENT;
+			err = parser_parse(this, type, flags, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = DEBUGGER_STATEMENT;
+			err = parser_parse(this, type, 0, q_pos, &child);
+		}
+		if (err == ERR_NO_MATCH) {
+			type = EXPRESSION_STATEMENT;
+			flags = in_flags & bits_off(GP_RETURN);
+			err = parser_parse(this, type, flags, q_pos, &child);
 		}
 		break;
 	default:
 		printf("%s: unsup %d\n", __func__, type);
-		if (type >= TOKEN_SCRIPT)
-			printf("%s: unsup non-term %d\n", __func__, type - TOKEN_SCRIPT);
+		if (type >= SCRIPT)
+			printf("%s: unsup non-term %d\n", __func__, type - SCRIPT);
 		else if (type >= TOKEN_IDENTIFIER)
 			printf("%s: unsup ident %d\n", __func__, type - TOKEN_IDENTIFIER);
 		exit(0);
@@ -580,7 +682,9 @@ int parser_parse(struct parser *this,
 			parse_node_add_child(node, child);
 		*out = node;
 	} else {
-		/* child is not inserted into node yet.*/
+		/* child is not inserted into node yet. Should be NULL. */
+		assert(child == NULL);
+
 		if (child)
 			parse_node_delete(child);
 		parse_node_delete(node);
@@ -597,7 +701,7 @@ int parser_parse_script(struct parser *this)
 	int err;
 
 	q_pos = 0;
-	err = parser_parse(this, TOKEN_SCRIPT, 0, &q_pos, &this->root);
+	err = parser_parse(this, SCRIPT, 0, &q_pos, &this->root);
 	if (err == ERR_END_OF_FILE)
 		err = ERR_SUCCESS;
 	return err;
