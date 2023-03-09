@@ -223,7 +223,7 @@ struct token {
 	const char16_t	*cooked;
 	size_t			cooked_len;
 
-	int				flags;
+	size_t			flags;
 	enum token_type	type;
 };
 

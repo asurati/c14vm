@@ -67,13 +67,12 @@ char16_t *g_key_words[] = {
 	u"with",
 	u"yield",
 };
-
 /*******************************************************************/
 static
 int token_new(enum token_type type,
 			  const struct token_location *locn,
 			  size_t raw_len,
-			  int flags,
+			  size_t flags,
 			  struct token **out)
 {
 	struct token *token;
@@ -127,7 +126,7 @@ int scanner_delete(struct scanner *this)
 static inline
 int scanner_build_token(struct scanner *this,
 						enum token_type type,
-						int flags,
+						size_t flags,
 						struct token **out)
 {
 	size_t raw_len;
@@ -301,91 +300,118 @@ bool scanner_skip_white_space(struct scanner *this)
 	return has_new_line;
 }
 /*******************************************************************/
-#if 0
-static
 int scanner_scan_string(struct scanner *this,
 						struct token **out)
 {
 	int err;
-	struct string str;
-	const char16_t *data;
-	char16_t cu;
-	bool is_dbl_quote;
-
-	string_init(&str);
+	enum token_type type;
+	struct token *token;
+	size_t i, cooked_len, flags;
+	char16_t cu, *cooked;
+	bool is_double_quoted;
+	static char16_t str[32];
 
 	err = scanner_peek(this, 0, &cu);
 	if (err)
-		goto err0;
+		return err;
 	scanner_consume(this, 1);
-	is_dbl_quote = cu == '\"';
+	is_double_quoted = cu == '\"';
 
+	cooked_len = i = flags = 0;
+	cooked = NULL;
 	while (true) {
 		err = scanner_peek(this, 0, &cu);
+		/* Can't have an error parsing a string. */
 		if (err)
 			break;
 		scanner_consume(this, 1);
 
-		if (cu == '\"' && is_dbl_quote)
+		if (is_double_quoted && cu == '\"')
 			break;
-		if (cu == '\'' && !is_dbl_quote)
+		if (!is_double_quoted && cu == '\'')
 			break;
 
-		/* Can't have any lineterminator except for LS and PS */
+		/* Can't have unescaped LF, CR in a string. */
 		err = ERR_INVALID_TOKEN;
-		if (cu == '\r' || cu == '\n') {
+		if (cu == '\r' || cu == '\n')
 			break;
-		}
 
-		if (cu != '\\') {
-			string_append(&str, cu);
-			continue;
-		}
+		/* Not an escape, so append */
+		if (cu != '\\')
+			goto append;
 
+		/* Read the char after \ */
 		err = scanner_peek(this, 0, &cu);
 		if (err)
 			break;
 		scanner_consume(this, 1);
 
-		if (is_line_terminator(cu)) {
+		/* LineTerminatorSequence. Ignore the line-terminator. */
+		if (is_line_terminator(cu))
+			continue;
+
+		/* SingleEscapeCharacter */
+		if (cu == '\'' || cu == '\"' || cu == '\\') {
+			goto append;
 		} else if (cu == 'b') {
-			string_append(&str, '\b');
+			cu = '\b';
+			goto append;
 		} else if (cu == 'f') {
-			string_append(&str, '\f');
+			cu = '\f';
+			goto append;
 		} else if (cu == 'n') {
-			string_append(&str, '\n');
+			cu = '\n';
+			goto append;
 		} else if (cu == 'r') {
-			string_append(&str, '\r');
+			cu = '\r';
+			goto append;
 		} else if (cu == 't') {
-			string_append(&str, '\t');
+			cu = '\t';
+			goto append;
 		} else if (cu == 'v') {
-			string_append(&str, '\v');
-		} else if (is_dec_digit(cu)) {
-			/* err = scanner_scan_legacy_oct_esq_seq(this, &cu); */
-			err = ERR_INVALID_TOKEN;
-		} else if (cu == 'u') {
-			/* err = scanner_scan_unicode_esc_seq(this, &cu); */
-			err = ERR_INVALID_TOKEN;
-		} else if (cu == 'x') {
-			/* err = scanner_scan_hex_esc_seq(this, &cu); */
-			err = ERR_INVALID_TOKEN;
-		} else {
-			string_append(&str, cu);
+			cu = '\v';
+			goto append;
 		}
-		if (err)
-			break;
+
+		/* TODO: handle x, u, dec_digit and NonEscChar */
+		/* Set flags */
+		flags |= bits_on(TF_UNC_SEQ);	/* For u */
+		flags |= bits_on(TF_HEX_SEQ);	/* For x */
+		printf("%s: TODO %c\n", __func__, cu);
+		exit(0);
+	append:
+		if (i == 32) {
+			cooked = realloc(cooked, (cooked_len + i) * sizeof(char16_t));
+			if (cooked == NULL)
+				return ERR_NO_MEMORY;
+			memcpy(&cooked[cooked_len], str, i * sizeof(char16_t));
+			cooked_len += i;
+			i = 0;
+		}
+		str[i++] = cu;
 	}
 
-	if (!err) {
-		data = string_move_data(&str);
-		return scanner_build_token(this, TOKEN_STRING, data, false, out);
+	if (err) {
+		free(cooked);
+		return err;
 	}
 
-	string_free(&str);
-err0:
+	if (i) {
+		cooked = realloc(cooked, (cooked_len + i) * sizeof(char16_t));
+		if (cooked == NULL)
+			return ERR_NO_MEMORY;
+		memcpy(&cooked[cooked_len], str, i * sizeof(char16_t));
+		cooked_len += i;
+	}
+
+	type = TOKEN_STRING;
+	err = scanner_build_token(this, type, flags, &token);
+	if (!err)
+		token_set_cooked(token, cooked, cooked_len);
+	if (!err)
+		*out = token;
 	return err;
 }
-#endif
 
 static
 int scanner_scan_equals(struct scanner *this,
@@ -429,8 +455,8 @@ static
 int scanner_scan_identifier(struct scanner *this,
 							struct token **out)
 {
-	int err, flags;
-	size_t i, j;
+	int err;
+	size_t i, j, flags;
 	size_t cooked_len;
 	char16_t cu, *cooked;
 	enum token_type type;
@@ -518,6 +544,9 @@ int scanner_scan_next_token(struct scanner *this,
 	err = scanner_peek(this, 0, &cu);
 	if (err)
 		return err;
+
+	if (cu == '\"' || cu == '\'')
+		return scanner_scan_string(this, out);
 
 	if (cu == '=')
 		return scanner_scan_equals(this, out);
