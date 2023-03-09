@@ -181,8 +181,7 @@ void scanner_consume(struct scanner *this,
 
 		/* \r and \r\n => \n */
 		if (cu == '\r') {
-			if (!scanner_is_end(this, locn->scan_pos) &&
-				this->src[locn->scan_pos] == '\n')
+			if (!scanner_peek(this, 0, &cu) && cu == '\n')
 				++locn->scan_pos;
 			cu = '\n';
 		}
@@ -406,10 +405,10 @@ int scanner_scan_string(struct scanner *this,
 
 	type = TOKEN_STRING;
 	err = scanner_build_token(this, type, flags, &token);
-	if (!err)
+	if (!err) {
 		token_set_cooked(token, cooked, cooked_len);
-	if (!err)
 		*out = token;
+	}
 	return err;
 }
 
@@ -533,6 +532,14 @@ int scanner_scan_identifier(struct scanner *this,
 }
 /*******************************************************************/
 static
+int scanner_scan_semi_colon(struct scanner *this,
+							struct token **out)
+{
+	scanner_consume(this, 1);	/* Consume ; */
+	return scanner_build_token(this, TOKEN_SEMI_COLON, 0, out);
+}
+/*******************************************************************/
+static
 int scanner_scan_next_token(struct scanner *this,
 							struct token **out)
 {
@@ -544,6 +551,9 @@ int scanner_scan_next_token(struct scanner *this,
 	err = scanner_peek(this, 0, &cu);
 	if (err)
 		return err;
+
+	if (cu == ';')
+		return scanner_scan_semi_colon(this, out);
 
 	if (cu == '\"' || cu == '\'')
 		return scanner_scan_string(this, out);
