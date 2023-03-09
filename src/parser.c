@@ -183,14 +183,23 @@ int parser_parse(struct parser *this,
 	case TOKEN_SUPER:
 	case TOKEN_IMPORT:
 	case TOKEN_THIS:
+	case TOKEN_NEW:
+	case TOKEN_NULL:
+	case TOKEN_TRUE:
+	case TOKEN_FALSE:
 		/* These are all reserved literals. */
 		err = parser_get_token(this, q_pos, &token);
 		if (!err &&
 			(token_type(token) != type || !token_is_reserved_literal(token)))
 			err = ERR_NO_MATCH;
 		break;
+	case TOKEN_NUMBER:
+	case TOKEN_STRING:
+		/* fall-through */
 	case TOKEN_LEFT_BRACE:
 	case TOKEN_RIGHT_BRACE:
+	case TOKEN_LEFT_BRACKET:
+	case TOKEN_RIGHT_BRACKET:
 	case TOKEN_SEMI_COLON:
 	case TOKEN_COMMA:
 	case TOKEN_EQUALS:
@@ -264,6 +273,27 @@ int parser_parse(struct parser *this,
 			flags &= bits_off(GP_RETURN);
 			err = parser_parse(this, type, flags, q_pos, &child);
 		}
+		break;
+		/*******************************************************************/
+	case ARRAY_EXPRESSION:
+		type = TOKEN_LEFT_BRACKET;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);
+
+		type = EXPRESSION;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_add_child(node, child);
+
+		type = TOKEN_RIGHT_BRACKET;
+		err = parser_parse(this, type, 0, q_pos, &child);
+		if (err)
+			break;
+		parse_node_delete(child);
+		child = NULL;
 		break;
 		/*******************************************************************/
 	case PRIMARY_EXPRESSION:
@@ -452,6 +482,16 @@ int parser_parse(struct parser *this,
 		err = parser_parse(this, type, flags, q_pos, &child);
 		break;
 		/*******************************************************************/
+	case CALL_MEMBER_EXPRESSION:
+		type = MEMBER_EXPRESSION;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		if (err)
+			break;
+		parse_node_add_child(node, child);
+
+		type = ARGUMENTS;
+		err = parser_parse(this, type, flags, q_pos, &child);
+		break;
 	case IMPORT_CALL:
 		type = TOKEN_IMPORT;
 		err = parser_parse(this, type, 0, q_pos, &child);
@@ -495,7 +535,7 @@ int parser_parse(struct parser *this,
 			err = parser_parse(this, type, flags, q_pos, &child);
 		}
 		if (err == ERR_NO_MATCH) {
-			type = CALL_MEMBER_EXPRESSION;
+			type = CALL_MEMBER_EXPRESSION;	/* restrictive grammar */
 			err = parser_parse(this, type, flags, q_pos, &child);
 		}
 		if (err)
