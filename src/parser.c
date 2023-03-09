@@ -9,7 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static const enum token_type g_assign_expr_ops[] = {
+static const
+enum token_type g_assign_expr_ops[] = {
 	TOKEN_EQUALS,
 	TOKEN_MUL_EQUALS,
 	TOKEN_DIV_EQUALS,
